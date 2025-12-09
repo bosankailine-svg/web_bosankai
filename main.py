@@ -1,566 +1,614 @@
-# main.py
-#
-# 「みんなの墓参会」用 API サーバ
-# - /ping
-# - /api/visits          墓参記録（複数写真・動画対応）
-# - /api/donations       寄付メモ
-# - /api/memories        思い出の品
-# - /api/memory_comments 思い出の品へのコメント
-#
-# 事前に:
-#   pip install fastapi "uvicorn[standard]" python-multipart
-#
-# ローカル起動:
-#   uvicorn main:app --reload
-
 import os
 import uuid
 import sqlite3
-import json
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, Form, File, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-DB_PATH = "bosankai.db"
-UPLOAD_DIR = "uploads"
+# ========= 設定 =========
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+DB_PATH = os.getenv("BOSANKAI_DB_PATH", "bosankai.db")
+MEDIA_ROOT = os.getenv("MEDIA_ROOT", "media")
 
+os.makedirs(MEDIA_ROOT, exist_ok=True)
+
+# ========= DB 初期化 =========
 
 def get_conn():
-  conn = sqlite3.connect(DB_PATH)
-  conn.row_factory = sqlite3.Row
-  return conn
-
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-  conn = get_conn()
-  cur = conn.cursor()
+    conn = get_conn()
+    cur = conn.cursor()
 
-  # 墓参記録
-  cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS visits (
-      id TEXT PRIMARY KEY,
-      community_id TEXT NOT NULL,
-      visit_date TEXT NOT NULL,
-      visitor_name TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      message TEXT,
-      created_at TEXT NOT NULL
+    # 墓参記録
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS visits (
+            id TEXT PRIMARY KEY,
+            community_id TEXT NOT NULL,
+            visit_date TEXT NOT NULL,
+            visitor_name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            message TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
     )
-    """
-  )
 
-  # 寄付メモ
-  cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS donations (
-      id TEXT PRIMARY KEY,
-      community_id TEXT,
-      visit_id TEXT NOT NULL,
-      donor_name TEXT,
-      amount INTEGER NOT NULL,
-      message TEXT,
-      created_at TEXT NOT NULL
+    # 墓参記録にぶら下がるメディア（写真・動画）
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS visit_media (
+            id TEXT PRIMARY KEY,
+            visit_id TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            FOREIGN KEY (visit_id) REFERENCES visits(id) ON DELETE CASCADE
+        )
+        """
     )
-    """
-  )
 
-  # 思い出の品
-  cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS memories (
-      id TEXT PRIMARY KEY,
-      community_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      created_by TEXT,
-      media_paths TEXT,
-      created_at TEXT NOT NULL
+    # 寄付（感謝の気持ち＋任意の金額）
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS donations (
+            id TEXT PRIMARY KEY,
+            community_id TEXT NOT NULL,
+            visit_id TEXT NOT NULL,
+            donor_name TEXT,
+            amount INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (visit_id) REFERENCES visits(id) ON DELETE CASCADE
+        )
+        """
     )
-    """
-  )
 
-  # 思い出の品へのコメント
-  cur.execute(
-    """
-    CREATE TABLE IF NOT EXISTS memory_comments (
-      id TEXT PRIMARY KEY,
-      community_id TEXT NOT NULL,
-      memory_id TEXT NOT NULL,
-      author_name TEXT,
-      message TEXT NOT NULL,
-      created_at TEXT NOT NULL
+    # 思い出の品
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY,
+            community_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT
+        )
+        """
     )
+
+    # 思い出の品メディア
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_media (
+            id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            media_type TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    # 思い出の品へのコメント
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_comments (
+            id TEXT PRIMARY KEY,
+            community_id TEXT NOT NULL,
+            memory_id TEXT NOT NULL,
+            author_name TEXT,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+def save_upload_file(upload: UploadFile, subdir: str, prefix: str) -> str:
     """
-  )
+    アップロードされたファイルを media/<subdir>/ 以下に保存し、
+    クライアントから参照するための URL パス (/media/...) を返す。
+    """
+    # 拡張子
+    _, ext = os.path.splitext(upload.filename or "")
+    if not ext:
+        # とりあえず適当に
+        ext = ".bin"
+    ext = ext.lower()
 
-  # 既存DBに media_paths や community_id 列が無かった場合に追加
-  def ensure_column(table: str, col_name: str, col_type: str):
-    cur.execute(f"PRAGMA table_info({table})")
-    cols = [r["name"] for r in cur.fetchall()]
-    if col_name not in cols:
-      cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+    safe_prefix = prefix.replace("/", "_")
+    token = uuid.uuid4().hex[:8]
+    filename = f"{safe_prefix}_{token}{ext}"
 
-  ensure_column("visits", "media_paths", "TEXT")
-  ensure_column("donations", "community_id", "TEXT")
+    dir_path = os.path.join(MEDIA_ROOT, subdir)
+    os.makedirs(dir_path, exist_ok=True)
 
-  conn.commit()
-  conn.close()
+    file_path = os.path.join(dir_path, filename)
+    with open(file_path, "wb") as f:
+        f.write(upload.file.read())
 
+    # クライアントからは /media/... でアクセス
+    url_path = f"/media/{subdir}/{filename}"
+    return url_path
 
-init_db()
+# 故人の顔写真（コミュニティごと 1 枚想定）は別関数で上書き保存
+def save_community_avatar(upload: UploadFile, community_id: str) -> str:
+    _, ext = os.path.splitext(upload.filename or "")
+    if not ext:
+        ext = ".jpg"
+    ext = ext.lower()
 
-# ==== モデル ====
+    safe_id = community_id.replace("/", "_")
+    filename = f"{safe_id}{ext}"
 
+    dir_path = os.path.join(MEDIA_ROOT, "community_avatars")
+    os.makedirs(dir_path, exist_ok=True)
+    file_path = os.path.join(dir_path, filename)
 
-class MediaItem(BaseModel):
-  url: str
-  media_type: str  # "image" or "video"
+    with open(file_path, "wb") as f:
+        f.write(upload.file.read())
 
+    return f"/media/community_avatars/{filename}"
 
-class VisitLog(BaseModel):
-  id: str
-  community_id: str
-  visit_date: str
-  visitor_name: str
-  kind: str
-  message: Optional[str] = None
-  media: List[MediaItem]
-  created_at: str
+# ========= Pydantic モデル =========
 
+class VisitMediaOut(BaseModel):
+    media_type: str
+    url: str
 
-class Donation(BaseModel):
-  id: str
-  community_id: Optional[str]
-  visit_id: str
-  donor_name: Optional[str] = None
-  amount: int
-  message: Optional[str] = None
-  created_at: str
+class VisitOut(BaseModel):
+    id: str
+    community_id: str
+    visit_date: str
+    visitor_name: str
+    kind: str
+    message: Optional[str]
+    created_at: str
+    media: List[VisitMediaOut] = []
 
+class DonationOut(BaseModel):
+    id: str
+    community_id: str
+    visit_id: str
+    donor_name: Optional[str]
+    amount: int
+    message: Optional[str]
+    created_at: str
 
-class MemoryItem(BaseModel):
-  id: str
-  community_id: str
-  title: str
-  description: Optional[str] = None
-  created_by: Optional[str] = None
-  media: List[MediaItem]
-  created_at: str
+class MemoryMediaOut(BaseModel):
+    media_type: str
+    url: str
 
+class MemoryOut(BaseModel):
+    id: str
+    community_id: str
+    title: str
+    description: Optional[str]
+    created_at: str
+    created_by: Optional[str]
+    media: List[MemoryMediaOut] = []
 
-class MemoryComment(BaseModel):
-  id: str
-  community_id: str
-  memory_id: str
-  author_name: Optional[str] = None
-  message: str
-  created_at: str
+class MemoryCommentOut(BaseModel):
+    id: str
+    community_id: str
+    memory_id: str
+    author_name: Optional[str]
+    message: str
+    created_at: str
 
+# ========= FastAPI 本体 =========
 
-# ==== FastAPI 本体 ====
-
-
-app = FastAPI()
+app = FastAPI(title="Bosankai API")
 
 app.add_middleware(
-  CORSMiddleware,
-  allow_origins=["*"],
-  allow_credentials=True,
-  allow_methods=["*"],
-  allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["*"],  # 必要なら絞る
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# media ディレクトリを静的配信
+app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
-def build_media_list(media_paths: Optional[str]) -> List[MediaItem]:
-  if not media_paths:
-    return []
-  try:
-    names = json.loads(media_paths)
-  except Exception:
-    names = []
-  items: List[MediaItem] = []
-  for name in names:
-    if not name:
-      continue
-    ext = os.path.splitext(name)[1].lower()
-    media_type = "video" if ext in [".mp4", ".mov", ".webm", ".m4v", ".avi"] else "image"
-    items.append(
-      MediaItem(
-        url=f"/uploads/{name}",
-        media_type=media_type,
-      )
-    )
-  return items
-
-
-async def save_files(files: Optional[List[UploadFile]], prefix: str) -> str:
-  """
-  複数ファイルを保存して、ファイル名リストを JSON 文字列で返す
-  """
-  if not files:
-    return json.dumps([])
-  names: List[str] = []
-  for f in files:
-    if not f or not f.filename:
-      continue
-    ext = os.path.splitext(f.filename)[1].lower()
-    if not ext:
-      ext = ".bin"
-    file_id = f"{prefix}_{uuid.uuid4().hex}{ext}"
-    path = os.path.join(UPLOAD_DIR, file_id)
-    data = await f.read()
-    with open(path, "wb") as out:
-      out.write(data)
-    names.append(file_id)
-  return json.dumps(names)
-
+# ---------- Ping ----------
 
 @app.get("/ping")
 def ping():
-  return {"status": "ok"}
+    return {"status": "ok"}
 
+# ---------- 墓参記録 ----------
 
-# ==== 墓参記録 ====
-
-
-@app.get("/api/visits", response_model=List[VisitLog])
-def list_visits(community_id: str = "default"):
-  conn = get_conn()
-  cur = conn.cursor()
-  cur.execute(
-    """
-    SELECT id, community_id, visit_date, visitor_name,
-           kind, message, media_paths, created_at
-    FROM visits
-    WHERE community_id = ?
-    ORDER BY visit_date DESC, created_at DESC
-    """,
-    (community_id,),
-  )
-  rows = cur.fetchall()
-  conn.close()
-
-  result: List[VisitLog] = []
-  for r in rows:
-    media = build_media_list(r["media_paths"] if "media_paths" in r.keys() else None)
-    result.append(
-      VisitLog(
-        id=r["id"],
-        community_id=r["community_id"],
-        visit_date=r["visit_date"],
-        visitor_name=r["visitor_name"],
-        kind=r["kind"],
-        message=r["message"],
-        media=media,
-        created_at=r["created_at"],
-      )
-    )
-  return result
-
-
-@app.post("/api/visits", response_model=VisitLog)
+@app.post("/api/visits", response_model=VisitOut)
 async def create_visit(
-  visit_date: str = Form(...),
-  visitor_name: str = Form(...),
-  kind: str = Form("visit"),
-  message: Optional[str] = Form(None),
-  community_id: str = Form("default"),
-  media: Optional[List[UploadFile]] = File(None),
+    community_id: str = Form("default"),
+    visit_date: str = Form(...),
+    visitor_name: str = Form(...),
+    kind: str = Form("visit"),
+    message: str = Form(""),
+    media: Optional[List[UploadFile]] = File(None),
 ):
-  visit_id = str(uuid.uuid4())
-  created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    vid = uuid.uuid4().hex
+    now = datetime.utcnow().isoformat()
 
-  media_paths = await save_files(media, "visit")
-
-  conn = get_conn()
-  cur = conn.cursor()
-  cur.execute(
-    """
-    INSERT INTO visits (
-      id, community_id, visit_date, visitor_name,
-      kind, message, media_paths, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-    (
-      visit_id,
-      community_id,
-      visit_date,
-      visitor_name,
-      kind,
-      message,
-      media_paths,
-      created_at,
-    ),
-  )
-  conn.commit()
-  conn.close()
-
-  media_list = build_media_list(media_paths)
-
-  return VisitLog(
-    id=visit_id,
-    community_id=community_id,
-    visit_date=visit_date,
-    visitor_name=visitor_name,
-    kind=kind,
-    message=message,
-    media=media_list,
-    created_at=created_at,
-  )
-
-
-# ==== 寄付メモ ====
-
-
-@app.get("/api/donations", response_model=List[Donation])
-def list_donations(community_id: str = "default"):
-  conn = get_conn()
-  cur = conn.cursor()
-  cur.execute(
-    """
-    SELECT id, community_id, visit_id, donor_name, amount, message, created_at
-    FROM donations
-    WHERE community_id = ?
-    ORDER BY created_at DESC
-    """,
-    (community_id,),
-  )
-  rows = cur.fetchall()
-  conn.close()
-
-  result: List[Donation] = []
-  for r in rows:
-    result.append(
-      Donation(
-        id=r["id"],
-        community_id=r["community_id"],
-        visit_id=r["visit_id"],
-        donor_name=r["donor_name"],
-        amount=int(r["amount"]),
-        message=r["message"],
-        created_at=r["created_at"],
-      )
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO visits (id, community_id, visit_date, visitor_name, kind, message, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (vid, community_id, visit_date, visitor_name, kind, message, now),
     )
-  return result
 
+    media_out: List[VisitMediaOut] = []
+    if media:
+        for up in media:
+            if not up.filename:
+                continue
+            content_type = up.content_type or ""
+            mtype = "video" if content_type.startswith("video/") else "image"
+            url_path = save_upload_file(up, "visit_media", prefix=vid)
+            mid = uuid.uuid4().hex
+            cur.execute(
+                """
+                INSERT INTO visit_media (id, visit_id, media_type, file_path)
+                VALUES (?, ?, ?, ?)
+                """,
+                (mid, vid, mtype, url_path),
+            )
+            media_out.append(VisitMediaOut(media_type=mtype, url=url_path))
 
-@app.post("/api/donations", response_model=Donation)
-def create_donation(
-  visit_id: str = Form(...),
-  donor_name: Optional[str] = Form(None),
-  amount: int = Form(...),
-  message: Optional[str] = Form(None),
-):
-  conn = get_conn()
-  cur = conn.cursor()
-
-  # visit から community_id を取得
-  cur.execute("SELECT community_id FROM visits WHERE id = ?", (visit_id,))
-  row = cur.fetchone()
-  if row is None:
+    conn.commit()
     conn.close()
-    raise HTTPException(status_code=400, detail="元の記録が見つかりません。")
 
-  community_id = row["community_id"]
-  donation_id = str(uuid.uuid4())
-  created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-  cur.execute(
-    """
-    INSERT INTO donations (
-      id, community_id, visit_id, donor_name, amount, message, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    """,
-    (
-      donation_id,
-      community_id,
-      visit_id,
-      donor_name,
-      int(amount),
-      message,
-      created_at,
-    ),
-  )
-  conn.commit()
-  conn.close()
-
-  return Donation(
-    id=donation_id,
-    community_id=community_id,
-    visit_id=visit_id,
-    donor_name=donor_name,
-    amount=int(amount),
-    message=message,
-    created_at=created_at,
-  )
-
-
-# ==== 思い出の品 ====
-
-
-@app.get("/api/memories", response_model=List[MemoryItem])
-def list_memories(community_id: str = "default"):
-  conn = get_conn()
-  cur = conn.cursor()
-  cur.execute(
-    """
-    SELECT id, community_id, title, description, created_by, media_paths, created_at
-    FROM memories
-    WHERE community_id = ?
-    ORDER BY created_at DESC
-    """,
-    (community_id,),
-  )
-  rows = cur.fetchall()
-  conn.close()
-
-  result: List[MemoryItem] = []
-  for r in rows:
-    media = build_media_list(r["media_paths"])
-    result.append(
-      MemoryItem(
-        id=r["id"],
-        community_id=r["community_id"],
-        title=r["title"],
-        description=r["description"],
-        created_by=r["created_by"],
-        media=media,
-        created_at=r["created_at"],
-      )
+    return VisitOut(
+        id=vid,
+        community_id=community_id,
+        visit_date=visit_date,
+        visitor_name=visitor_name,
+        kind=kind,
+        message=message,
+        created_at=now,
+        media=media_out,
     )
-  return result
 
+@app.get("/api/visits", response_model=List[VisitOut])
+def list_visits(
+    community_id: str = Query("default"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
 
-@app.post("/api/memories", response_model=MemoryItem)
+    cur.execute(
+        """
+        SELECT
+            v.id,
+            v.community_id,
+            v.visit_date,
+            v.visitor_name,
+            v.kind,
+            v.message,
+            v.created_at
+        FROM visits v
+        WHERE v.community_id = ?
+        ORDER BY v.visit_date DESC, v.created_at DESC
+        """,
+        (community_id,),
+    )
+    rows = cur.fetchall()
+
+    # メディアを一気に取得
+    ids = [r["id"] for r in rows]
+    media_map = {vid: [] for vid in ids}
+    if ids:
+        qmarks = ",".join("?" for _ in ids)
+        cur.execute(
+            f"""
+            SELECT visit_id, media_type, file_path
+            FROM visit_media
+            WHERE visit_id IN ({qmarks})
+            """,
+            ids,
+        )
+        for mr in cur.fetchall():
+            media_map[mr["visit_id"]].append(
+                VisitMediaOut(media_type=mr["media_type"], url=mr["file_path"])
+            )
+
+    conn.close()
+
+    result: List[VisitOut] = []
+    for r in rows:
+        result.append(
+            VisitOut(
+                id=r["id"],
+                community_id=r["community_id"],
+                visit_date=r["visit_date"],
+                visitor_name=r["visitor_name"],
+                kind=r["kind"],
+                message=r["message"],
+                created_at=r["created_at"],
+                media=media_map.get(r["id"], []),
+            )
+        )
+    return result
+
+# ---------- 寄付（感謝の気持ち） ----------
+
+@app.post("/api/donations", response_model=DonationOut)
+async def create_donation(
+    visit_id: str = Form(...),
+    donor_name: str = Form(""),
+    amount: Optional[int] = Form(0),
+    message: str = Form(""),
+):
+    # visit のコミュニティIDを引き継ぐ
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT community_id FROM visits WHERE id = ?", (visit_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="visit not found")
+    community_id = row["community_id"]
+
+    did = uuid.uuid4().hex
+    now = datetime.utcnow().isoformat()
+    amt = int(amount or 0)
+
+    cur.execute(
+        """
+        INSERT INTO donations (id, community_id, visit_id, donor_name, amount, message, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (did, community_id, visit_id, donor_name, amt, message, now),
+    )
+    conn.commit()
+    conn.close()
+
+    return DonationOut(
+        id=did,
+        community_id=community_id,
+        visit_id=visit_id,
+        donor_name=donor_name or None,
+        amount=amt,
+        message=message or None,
+        created_at=now,
+    )
+
+@app.get("/api/donations", response_model=List[DonationOut])
+def list_donations(
+    community_id: str = Query("default"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, community_id, visit_id, donor_name, amount, message, created_at
+        FROM donations
+        WHERE community_id = ?
+        ORDER BY created_at DESC
+        """,
+        (community_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        DonationOut(
+            id=r["id"],
+            community_id=r["community_id"],
+            visit_id=r["visit_id"],
+            donor_name=r["donor_name"],
+            amount=r["amount"],
+            message=r["message"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+# ---------- 思い出の品 ----------
+
+@app.post("/api/memories", response_model=MemoryOut)
 async def create_memory(
-  title: str = Form(...),
-  description: Optional[str] = Form(None),
-  community_id: str = Form("default"),
-  created_by: Optional[str] = Form(None),
-  media: Optional[List[UploadFile]] = File(None),
+    community_id: str = Form(...),
+    title: str = Form(...),
+    description: str = Form(""),
+    created_by: str = Form(""),
+    media: Optional[List[UploadFile]] = File(None),
 ):
-  memory_id = str(uuid.uuid4())
-  created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mid = uuid.uuid4().hex
+    now = datetime.utcnow().isoformat()
 
-  media_paths = await save_files(media, "memory")
-
-  conn = get_conn()
-  cur = conn.cursor()
-  cur.execute(
-    """
-    INSERT INTO memories (
-      id, community_id, title, description, created_by, media_paths, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    """,
-    (
-      memory_id,
-      community_id,
-      title,
-      description,
-      created_by,
-      media_paths,
-      created_at,
-    ),
-  )
-  conn.commit()
-  conn.close()
-
-  media_list = build_media_list(media_paths)
-
-  return MemoryItem(
-    id=memory_id,
-    community_id=community_id,
-    title=title,
-    description=description,
-    created_by=created_by,
-    media=media_list,
-    created_at=created_at,
-  )
-
-
-@app.get("/api/memory_comments", response_model=List[MemoryComment])
-def list_memory_comments(community_id: str = "default"):
-  conn = get_conn()
-  cur = conn.cursor()
-  cur.execute(
-    """
-    SELECT id, community_id, memory_id, author_name, message, created_at
-    FROM memory_comments
-    WHERE community_id = ?
-    ORDER BY created_at ASC
-    """,
-    (community_id,),
-  )
-  rows = cur.fetchall()
-  conn.close()
-
-  result: List[MemoryComment] = []
-  for r in rows:
-    result.append(
-      MemoryComment(
-        id=r["id"],
-        community_id=r["community_id"],
-        memory_id=r["memory_id"],
-        author_name=r["author_name"],
-        message=r["message"],
-        created_at=r["created_at"],
-      )
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO memories (id, community_id, title, description, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (mid, community_id, title, description, now, created_by),
     )
-  return result
 
+    media_out: List[MemoryMediaOut] = []
+    if media:
+        for up in media:
+            if not up.filename:
+                continue
+            content_type = up.content_type or ""
+            mtype = "video" if content_type.startswith("video/") else "image"
+            url_path = save_upload_file(up, "memory_media", prefix=mid)
+            mmid = uuid.uuid4().hex
+            cur.execute(
+                """
+                INSERT INTO memory_media (id, memory_id, media_type, file_path)
+                VALUES (?, ?, ?, ?)
+                """,
+                (mmid, mid, mtype, url_path),
+            )
+            media_out.append(MemoryMediaOut(media_type=mtype, url=url_path))
 
-@app.post("/api/memory_comments", response_model=MemoryComment)
-def create_memory_comment(
-  memory_id: str = Form(...),
-  author_name: Optional[str] = Form(None),
-  message: str = Form(...),
-):
-  conn = get_conn()
-  cur = conn.cursor()
-
-  # memory から community_id を取得
-  cur.execute("SELECT community_id FROM memories WHERE id = ?", (memory_id,))
-  row = cur.fetchone()
-  if row is None:
+    conn.commit()
     conn.close()
-    raise HTTPException(status_code=400, detail="対象の思い出が見つかりません。")
 
-  community_id = row["community_id"]
-  comment_id = str(uuid.uuid4())
-  created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return MemoryOut(
+        id=mid,
+        community_id=community_id,
+        title=title,
+        description=description,
+        created_at=now,
+        created_by=created_by or None,
+        media=media_out,
+    )
 
-  cur.execute(
-    """
-    INSERT INTO memory_comments (
-      id, community_id, memory_id, author_name, message, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?)
-    """,
-    (
-      comment_id,
-      community_id,
-      memory_id,
-      author_name,
-      message,
-      created_at,
-    ),
-  )
-  conn.commit()
-  conn.close()
+@app.get("/api/memories", response_model=List[MemoryOut])
+def list_memories(
+    community_id: str = Query("default"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, community_id, title, description, created_at, created_by
+        FROM memories
+        WHERE community_id = ?
+        ORDER BY created_at DESC
+        """,
+        (community_id,),
+    )
+    rows = cur.fetchall()
 
-  return MemoryComment(
-    id=comment_id,
-    community_id=community_id,
-    memory_id=memory_id,
-    author_name=author_name,
-    message=message,
-    created_at=created_at,
-  )
+    mids = [r["id"] for r in rows]
+    media_map = {mid: [] for mid in mids}
+    if mids:
+        qmarks = ",".join("?" for _ in mids)
+        cur.execute(
+            f"""
+            SELECT memory_id, media_type, file_path
+            FROM memory_media
+            WHERE memory_id IN ({qmarks})
+            """,
+            mids,
+        )
+        for mr in cur.fetchall():
+            media_map[mr["memory_id"]].append(
+                MemoryMediaOut(media_type=mr["media_type"], url=mr["file_path"])
+            )
+
+    conn.close()
+
+    result: List[MemoryOut] = []
+    for r in rows:
+        result.append(
+            MemoryOut(
+                id=r["id"],
+                community_id=r["community_id"],
+                title=r["title"],
+                description=r["description"],
+                created_at=r["created_at"],
+                created_by=r["created_by"],
+                media=media_map.get(r["id"], []),
+            )
+        )
+    return result
+
+# ---------- 思い出の品 コメント ----------
+
+@app.post("/api/memory_comments", response_model=MemoryCommentOut)
+async def create_memory_comment(
+    memory_id: str = Form(...),
+    author_name: str = Form(""),
+    message: str = Form(...),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT community_id FROM memories WHERE id = ?",
+        (memory_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="memory not found")
+    community_id = row["community_id"]
+
+    cid = uuid.uuid4().hex
+    now = datetime.utcnow().isoformat()
+
+    cur.execute(
+        """
+        INSERT INTO memory_comments (id, community_id, memory_id, author_name, message, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (cid, community_id, memory_id, author_name, message, now),
+    )
+    conn.commit()
+    conn.close()
+
+    return MemoryCommentOut(
+        id=cid,
+        community_id=community_id,
+        memory_id=memory_id,
+        author_name=author_name or None,
+        message=message,
+        created_at=now,
+    )
+
+@app.get("/api/memory_comments", response_model=List[MemoryCommentOut])
+def list_memory_comments(
+    community_id: str = Query("default"),
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT id, community_id, memory_id, author_name, message, created_at
+        FROM memory_comments
+        WHERE community_id = ?
+        ORDER BY created_at ASC
+        """,
+        (community_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        MemoryCommentOut(
+            id=r["id"],
+            community_id=r["community_id"],
+            memory_id=r["memory_id"],
+            author_name=r["author_name"],
+            message=r["message"],
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+# ---------- 故人の顔写真アップロード ----------
+
+@app.post("/api/community_avatar")
+async def upload_community_avatar(
+    community_id: str = Form(...),
+    photo: UploadFile = File(...),
+):
+    if not community_id:
+        raise HTTPException(status_code=400, detail="community_id is required")
+    url_path = save_community_avatar(photo, community_id)
+    return {"community_id": community_id, "photo_url": url_path}
