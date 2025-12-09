@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>オンライン墓参りログ（実験版）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#e5e7eb;
+      --panel:#ffffff;
+      --ink:#111827;
+      --accent:#2563eb;
+      --accent-soft:#eff6ff;
+      --border:#d1d5db;
+      --muted:#6b7280;
+      --diary:#fef3c7;
+    }
+    *{box-sizing:border-box;}
+    body{
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      background:radial-gradient(circle at top, #ffffff 0, #e5e7eb 45%, #d1d5db 100%);
+      color:var(--ink);
+      padding:1rem;
+    }
+    .app{
+      max-width:960px;
+      margin:0 auto;
+    }
+    h1{
+      font-size:1.6rem;
+      margin:0 0 0.25rem;
+      display:flex;
+      align-items:center;
+      gap:0.4rem;
+    }
+    h1 span.icon{
+      font-size:1.7rem;
+    }
+    .note{
+      font-size:0.85rem;
+      color:var(--muted);
+      margin:0.25rem 0 0;
+      line-height:1.6;
+    }
+    .card{
+      background:var(--panel);
+      border-radius:1rem;
+      padding:1rem;
+      box-shadow:0 10px 25px rgba(15,23,42,0.08);
+      margin-bottom:1rem;
+      border:1px solid rgba(148,163,184,0.35);
+    }
+    .header-card{
+      margin-bottom:1.2rem;
+      position:relative;
+      overflow:hidden;
+    }
+    .header-card::before{
+      content:"";
+      position:absolute;
+      inset:auto -40px 0;
+      height:40px;
+      background:linear-gradient(90deg, rgba(37,99,235,0.16), transparent);
+    }
+    .header-top{
+      display:flex;
+      justify-content:space-between;
+      gap:1rem;
+      align-items:flex-start;
+    }
+    .header-right{
+      text-align:right;
+      font-size:0.8rem;
+      color:var(--muted);
+    }
+    .chip-row{
+      margin-top:0.7rem;
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.4rem;
+      font-size:0.75rem;
+    }
+    .chip{
+      padding:0.18rem 0.6rem;
+      border-radius:999px;
+      border:1px solid rgba(148,163,184,0.8);
+      background-color:#f9fafb;
+      display:inline-flex;
+      align-items:center;
+      gap:0.25rem;
+      white-space:nowrap;
+    }
+    .chip strong{
+      font-weight:600;
+    }
+
+    /* フォーム */
+    .form-grid{
+      display:grid;
+      grid-template-columns:1.1fr 0.9fr;
+      gap:0.75rem;
+    }
+    @media (max-width:720px){
+      .form-grid{
+        grid-template-columns:1fr;
+      }
+    }
+    label{
+      font-size:0.8rem;
+      display:block;
+      margin-bottom:0.2rem;
+      color:var(--muted);
+    }
+    input[type="text"],
+    input[type="date"],
+    textarea{
+      width:100%;
+      font-size:0.9rem;
+      padding:0.45rem 0.55rem;
+      border-radius:0.6rem;
+      border:1px solid var(--border);
+      margin-bottom:0.55rem;
+      background:#f9fafb;
+    }
+    textarea{
+      min-height:80px;
+      resize:vertical;
+    }
+    input[type="file"]{
+      font-size:0.8rem;
+      margin-bottom:0.6rem;
+    }
+    input:focus,
+    textarea:focus{
+      outline:none;
+      border-color:var(--accent);
+      box-shadow:0 0 0 1px rgba(37,99,235,0.2);
+      background:#ffffff;
+    }
+    button{
+      appearance:none;
+      border:none;
+      border-radius:999px;
+      padding:0.45rem 1.3rem;
+      font-size:0.9rem;
+      font-weight:600;
+      background:var(--accent);
+      color:white;
+      cursor:pointer;
+      box-shadow:0 6px 18px rgba(37,99,235,0.35);
+      display:inline-flex;
+      align-items:center;
+      gap:0.4rem;
+    }
+    button span.btn-sub{
+      font-size:0.7rem;
+      opacity:0.9;
+    }
+    button:disabled{
+      opacity:0.5;
+      cursor:default;
+      box-shadow:none;
+    }
+
+    .section-title{
+      font-size:1rem;
+      margin:0 0 0.6rem;
+      display:flex;
+      align-items:center;
+      gap:0.4rem;
+    }
+    .section-title span.dot{
+      width:8px;
+      height:8px;
+      border-radius:999px;
+      background:var(--accent);
+    }
+
+    /* 記録の種類（参拝 / 日記） */
+    .kind-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.4rem;
+      align-items:center;
+      margin:0.2rem 0 0.5rem;
+      font-size:0.8rem;
+    }
+    .kind-label{
+      color:var(--muted);
+      margin-right:0.2rem;
+    }
+    .kind-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:0.3rem;
+      padding:0.2rem 0.6rem;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#f9fafb;
+      cursor:pointer;
+    }
+    .kind-pill input{
+      margin:0;
+    }
+
+    /* ログ表示 */
+    .logs{
+      list-style:none;
+      padding:0;
+      margin:0;
+      display:flex;
+      flex-direction:column;
+      gap:0.75rem;
+    }
+    .log-item{
+      position:relative;
+      padding:0.75rem 0.75rem 0.6rem 0.8rem;
+      border-radius:0.8rem;
+      background:#f9fafb;
+      border:1px solid rgba(209,213,219,0.9);
+    }
+    .log-item::before{
+      content:"";
+      position:absolute;
+      inset:0 auto 0 0;
+      width:4px;
+      border-radius:999px;
+      background:linear-gradient(to bottom, var(--accent), #38bdf8);
+    }
+    .log-header{
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.45rem;
+      font-size:0.85rem;
+      margin-bottom:0.25rem;
+      align-items:center;
+    }
+    .log-date{
+      padding:0.12rem 0.7rem;
+      border-radius:999px;
+      background:var(--accent-soft);
+      font-weight:600;
+      font-size:0.8rem;
+    }
+    .log-name{
+      font-weight:600;
+    }
+    .log-target{
+      font-size:0.8rem;
+      color:var(--muted);
+    }
+    .kind-badge{
+      padding:0.12rem 0.6rem;
+      border-radius:999px;
+      font-size:0.75rem;
+      border:1px solid rgba(148,163,184,0.8);
+      background:#f9fafb;
+    }
+    .kind-badge.visit{
+      background:#ecfdf5;
+      border-color:#bbf7d0;
+    }
+    .kind-badge.diary{
+      background:var(--diary);
+      border-color:#fbbf24;
+    }
+
+    .log-message{
+      font-size:0.9rem;
+      margin:0.35rem 0 0.15rem;
+      white-space:pre-wrap;
+      line-height:1.5;
+    }
+    .log-meta{
+      font-size:0.7rem;
+      color:var(--muted);
+      margin-top:0.2rem;
+    }
+    .log-photo{
+      margin-top:0.4rem;
+    }
+    .log-photo img{
+      max-width:150px;
+      border-radius:0.55rem;
+      border:1px solid var(--border);
+      display:block;
+    }
+    .empty{
+      font-size:0.85rem;
+      color:var(--muted);
+    }
+
+    /* 寄付ブロック */
+    .donation-block{
+      margin-top:0.45rem;
+      padding:0.45rem 0.55rem;
+      border-radius:0.6rem;
+      background:#f3f4f6;
+      font-size:0.8rem;
+    }
+    .donation-summary{
+      font-weight:600;
+      margin-bottom:0.2rem;
+    }
+    .donation-line{
+      margin:0.1rem 0;
+    }
+    .donation-block small{
+      display:block;
+      margin-top:0.2rem;
+      color:var(--muted);
+      font-size:0.75rem;
+    }
+    .donation-block button{
+      margin-top:0.35rem;
+      font-size:0.8rem;
+      padding:0.25rem 0.9rem;
+      background:#111827;
+      box-shadow:none;
+    }
+    .donation-block button span.btn-sub{
+      font-size:0.7rem;
+      opacity:0.9;
+    }
+
+    /* 寄付集計カード */
+    #summaryContainer table{
+      width:100%;
+      border-collapse:collapse;
+    }
+    #summaryContainer th,
+    #summaryContainer td{
+      padding:0.25rem 0;
+      font-size:0.8rem;
+    }
+    #summaryContainer th{
+      text-align:left;
+      color:var(--muted);
+      border-bottom:1px solid rgba(209,213,219,0.8);
+    }
+    #summaryContainer td{
+      border-bottom:1px dashed rgba(209,213,219,0.6);
+    }
+
+    /* フィルター */
+    .filter-row{
+      display:flex;
+      flex-wrap:wrap;
+      gap:0.75rem;
+      align-items:flex-end;
+      margin-bottom:0.6rem;
+      font-size:0.8rem;
+    }
+    .filter-block{
+      flex:1 1 180px;
+    }
+    .filter-label{
+      display:block;
+      margin-bottom:0.15rem;
+      color:var(--muted);
+    }
+    .filter-select,
+    .filter-input{
+      width:100%;
+      padding:0.35rem 0.5rem;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#f9fafb;
+      font-size:0.8rem;
+    }
+    .filter-select:focus,
+    .filter-input:focus{
+      outline:none;
+      border-color:var(--accent);
+      box-shadow:0 0 0 1px rgba(37,99,235,0.15);
+      background:#ffffff;
+    }
+
+    @media (max-width:600px){
+      body{
+        padding:0.7rem;
+      }
+      .card{
+        border-radius:0.8rem;
+        padding:0.85rem;
+      }
+      .log-item{
+        padding:0.7rem 0.7rem 0.55rem 0.75rem;
+      }
+    }
+  </style>
+
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+
+</head>
+<body>
+  <div class="app">
+    <!-- ヘッダー -->
+    <div class="card header-card">
+      <div class="header-top">
+        <div>
+          <h1><span class="icon">🕊️</span><span>オンライン墓参りログ</span></h1>
+          <p class="note">
+            「誰がどれくらい行っているか」をやわらかく見えるようにして、<br>
+            行ける日も行けない日も、それぞれが無理のない範囲で気持ちを残すためのテスト版です。<br>
+            ※寄付はあくまで「メモ」用で、実際のお金のやりとりは現金や振込など別の手段で行ってください。
+          </p>
+        </div>
+        <div class="header-right">
+          <div>命日・お盆だけでなく、</div>
+          <div>ふと思い出した日も、ひとことだけ残せます。</div>
+        </div>
+      </div>
+      <div class="chip-row">
+        <span class="chip"><strong>✔</strong> お参りの様子を写真つきで記録</span>
+        <span class="chip"><strong>✔</strong> 行けない日も「家からの手合わせ」を日記に</span>
+        <span class="chip"><strong>✔</strong> 寄付は「やりたい人だけ」がメモ</span>
+      </div>
+    </div>
+
+    <!-- 登録フォーム -->
+    <div class="card">
+      <h2 class="section-title"><span class="dot"></span><span>新しい記録を残す</span></h2>
+      <form id="visitForm">
+        <div class="form-grid">
+          <div>
+            <label for="visitDate">日付</label>
+            <input type="date" id="visitDate" name="visit_date" required>
+
+            <label for="visitorName">記録した人の名前</label>
+            <input type="text" id="visitorName" name="visitor_name" placeholder="例）太郎" required>
+
+            <label for="target">どの方のお墓・記録か</label>
+            <input type="text" id="target" name="target" placeholder="例）祖父 ◯◯ のお墓／祖母 △△ のこと">
+            
+            <div class="kind-row">
+              <span class="kind-label">記録の種類</span>
+              <label class="kind-pill">
+                <input type="radio" name="kind" value="visit" checked>
+                <span>実際にお墓に行った</span>
+              </label>
+              <label class="kind-pill">
+                <input type="radio" name="kind" value="diary">
+                <span>行けなかった日のメモ（家からの手合わせ）</span>
+              </label>
+            </div>
+
+            <label for="message">ひとこと・メモ</label>
+            <textarea id="message" name="message" placeholder="例）掃除をして、お花とお線香をお供えしました。"></textarea>
+          </div>
+          <div>
+            <label for="photo">写真（墓石やお花など／1枚まで）</label>
+            <input type="file" id="photo" name="photo" accept="image/*">
+            <p class="note" style="font-size:0.78rem; margin-top:0;">
+              写真は「今どんな様子か」を共有するためのものです。<br>
+              日記モード（家からの手合わせ）のときは、写真なしでも大丈夫です。
+            </p>
+          </div>
+        </div>
+        <button type="submit" id="submitBtn">
+          記録する
+          <span class="btn-sub">今日の気持ちを残す</span>
+        </button>
+      </form>
+    </div>
+
+    <!-- 寄付の集計 -->
+    <div class="card">
+      <h2 class="section-title"><span class="dot"></span><span>寄付のざっくり集計（メモ）</span></h2>
+      <div id="summaryContainer">
+        <p class="empty">まだ寄付の記録がありません。</p>
+      </div>
+    </div>
+
+    <!-- ★ お参り・日記の傾向 -->
+    <div class="card">
+      <h2 class="section-title"><span class="dot"></span><span>お参り・日記のざっくり傾向</span></h2>
+      <div id="visitSummaryContainer">
+        <p class="empty">まだ記録がありません。</p>
+      </div>
+    </div>
+
+    <!-- 一覧 -->
+    <div class="card">
+      <h2 class="section-title"><span class="dot"></span><span>これまでの記録</span></h2>
+
+      <!-- 絞り込み -->
+      <div class="filter-row">
+        <div class="filter-block">
+          <span class="filter-label">表示する種類</span>
+          <select id="filterKind" class="filter-select">
+            <option value="all">すべて</option>
+            <option value="visit">お墓参りだけ</option>
+            <option value="diary">日記（家からの手合わせ）だけ</option>
+          </select>
+        </div>
+        <div class="filter-block">
+          <span class="filter-label">「どの方の記録か」で絞り込み</span>
+          <input id="filterTarget" class="filter-input" type="text" placeholder="例）祖父／祖母／◯◯ など一部の文字でOK">
+        </div>
+      </div>
+
+      <div id="logsContainer">
+        <p class="empty">まだ記録がありません。</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ★ LIFF 設定（LINEで動かすとき用）
+    // LINE Developers で発行される LIFF ID をあとでここに入れる
+    const LIFF_ID = "2008658750-28D6NP3P";
+
+    async function initLiffIfAvailable() {
+      // ローカルで file:// から開いているときは何もしない
+      if (location.protocol === "file:") {
+        return;
+      }
+      // LIFF SDK が読み込めていなければ何もしない
+      if (typeof liff === "undefined") {
+        return;
+      }
+      try {
+        await liff.init({ liffId: LIFF_ID });
+
+        // LINEにログインしていなければログインさせる
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+
+        // ログイン済みならプロフィールを取得して名前欄にセット
+        const profile = await liff.getProfile();  // displayName 等が取れる
+        const nameInput = document.getElementById("visitorName");
+        if (nameInput && !nameInput.value) {
+          nameInput.value = profile.displayName || "";
+        }
+      } catch (e) {
+        console.error("LIFF init error:", e);
+        // 失敗しても画面自体は普通のWebアプリとして動くので放置でOK
+      }
+    }
+
+    const API_BASE = "http://127.0.0.1:8000";
+
+    // 全データを保持しておく（フィルター・集計用）
+    let gLogs = [];
+    let gDonations = [];
+
+    // 今日の日付をデフォルトにセット
+    function setToday() {
+      const d = new Date();
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const dd = String(d.getDate()).padStart(2, "0");
+      document.getElementById("visitDate").value = `${yyyy}-${mm}-${dd}`;
+    }
+
+    // 寄付のざっくり集計（人ごと）
+    function updateSummary(donations) {
+      const box = document.getElementById("summaryContainer");
+      if (!box) return;
+
+      if (!donations || donations.length === 0) {
+        box.innerHTML = '<p class="empty">まだ寄付の記録がありません。</p>';
+        return;
+      }
+
+      let totalAmount = 0;
+      const byDonor = {};
+
+      donations.forEach(d => {
+        const amount = Number(d.amount) || 0;
+        totalAmount += amount;
+        const name = d.donor_name || "（名前なし）";
+        if (!byDonor[name]) {
+          byDonor[name] = { name, total: 0, count: 0 };
+        }
+        byDonor[name].total += amount;
+        byDonor[name].count += 1;
+      });
+
+      const donors = Object.values(byDonor).sort((a, b) => b.total - a.total);
+
+      let html = '';
+      html += `<p style="font-size:0.85rem; margin:0 0 0.5rem;">
+合計寄付額（メモ）：${totalAmount.toLocaleString()} 円 ／ 件数：${donations.length} 件
+</p>`;
+
+      html += `<table>
+<thead>
+<tr>
+  <th style="text-align:left;">名前</th>
+  <th style="text-align:right;">件数</th>
+  <th style="text-align:right;">合計額</th>
+  <th style="text-align:right;">1件あたり目安</th>
+</tr>
+</thead>
+<tbody>`;
+
+      donors.forEach(p => {
+        const avg = p.total && p.count ? Math.round(p.total / p.count) : 0;
+        html += `<tr>
+  <td>${p.name}</td>
+  <td style="text-align:right;">${p.count}</td>
+  <td style="text-align:right;">${p.total.toLocaleString()} 円</td>
+  <td style="text-align:right;">${avg.toLocaleString()} 円</td>
+</tr>`;
+      });
+
+      html += `</tbody></table>`;
+
+      box.innerHTML = html;
+    }
+
+    // ★ お参り・日記の傾向（人ごと／対象ごと／種別）
+    function updateVisitSummary(logs) {
+      const box = document.getElementById("visitSummaryContainer");
+      if (!box) return;
+
+      if (!logs || logs.length === 0) {
+        box.innerHTML = '<p class="empty">まだ記録がありません。</p>';
+        return;
+      }
+
+      const total = logs.length;
+      const byPerson = {};
+      const byTarget = {};
+      const byKind = { visit: 0, diary: 0 };
+
+      logs.forEach(item => {
+        const name = item.visitor_name || "（名前なし）";
+        const target = item.target || "先祖のお墓";
+        const kind = item.kind || "visit";
+
+        byPerson[name] = (byPerson[name] || 0) + 1;
+        byTarget[target] = (byTarget[target] || 0) + 1;
+        if (!byKind[kind]) byKind[kind] = 0;
+        byKind[kind] += 1;
+      });
+
+      const persons = Object.entries(byPerson)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      const targets = Object.entries(byTarget)
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count);
+
+      const visitCount = byKind.visit || 0;
+      const diaryCount = byKind.diary || 0;
+
+      let html = "";
+      html += `<p style="font-size:0.85rem; margin:0 0 0.6rem;">
+全体：${total} 件（お墓参り ${visitCount} 件 ／ 日記 ${diaryCount} 件）です。あくまで「傾向」を見るためのメモです。
+</p>`;
+
+      html += `<div style="display:flex; flex-wrap:wrap; gap:1.2rem; font-size:0.8rem;">`;
+
+      // 人ごと
+      html += `<div style="flex:1 1 200px;">
+  <div style="font-weight:600; margin-bottom:0.3rem;">人ごとの記録回数</div>`;
+      html += `<ul style="list-style:none; padding:0; margin:0;">`;
+      persons.forEach(p => {
+        const ratio = total ? Math.round((p.count / total) * 100) : 0;
+        html += `<li style="margin:0.12rem 0;">
+  <span>${p.name}</span>
+  <span style="float:right;">${p.count} 件（約 ${ratio}%）</span>
+</li>`;
+      });
+      html += `</ul></div>`;
+
+      // 対象ごと
+      html += `<div style="flex:1 1 200px;">
+  <div style="font-weight:600; margin-bottom:0.3rem;">どの方の記録が多いか</div>`;
+      html += `<ul style="list-style:none; padding:0; margin:0;">`;
+      targets.forEach(t => {
+        const ratio = total ? Math.round((t.count / total) * 100) : 0;
+        html += `<li style="margin:0.12rem 0;">
+  <span>${t.name}</span>
+  <span style="float:right;">${t.count} 件（約 ${ratio}%）</span>
+</li>`;
+      });
+      html += `</ul></div>`;
+
+      html += `</div>`;
+
+      box.innerHTML = html;
+    }
+
+    // 現在のフィルター条件を読み取って一覧を描画
+    function renderLogs() {
+      const container = document.getElementById("logsContainer");
+      const filterKindEl = document.getElementById("filterKind");
+      const filterTargetEl = document.getElementById("filterTarget");
+
+      if (!container) return;
+
+      const kindFilter = filterKindEl ? filterKindEl.value : "all";
+      const targetTextRaw = filterTargetEl ? filterTargetEl.value : "";
+      const targetText = targetTextRaw.trim();
+
+      let logs = gLogs.slice();  // コピー
+
+      // 種類フィルター
+      if (kindFilter !== "all") {
+        logs = logs.filter(item => {
+          const k = item.kind || "visit";
+          return k === kindFilter;
+        });
+      }
+
+      // 対象フィルター（部分一致）
+      if (targetText) {
+        const q = targetText.toLowerCase();
+        logs = logs.filter(item => {
+          const t = (item.target || "先祖のお墓").toLowerCase();
+          return t.includes(q);
+        });
+      }
+
+      if (!logs.length) {
+        container.innerHTML = "<p class=\"empty\">（この条件に合う記録はありません）</p>";
+        return;
+      }
+
+      // visit_id ごとに寄付をまとめる
+      const donationsByVisit = {};
+      gDonations.forEach(d => {
+        const vid = d.visit_id;
+        if (!donationsByVisit[vid]) {
+          donationsByVisit[vid] = [];
+        }
+        donationsByVisit[vid].push(d);
+      });
+
+      const ul = document.createElement("ul");
+      ul.className = "logs";
+
+      logs.forEach(item => {
+        const li = document.createElement("li");
+        li.className = "log-item";
+
+        const kind = item.kind || "visit";
+        const target = item.target || "先祖のお墓";
+        const kindLabel = kind === "diary" ? "家からの手合わせ・日記" : "お墓参り";
+        const kindClass = kind === "diary" ? "kind-badge diary" : "kind-badge visit";
+
+        const header = document.createElement("div");
+        header.className = "log-header";
+        header.innerHTML = `
+          <span class="log-date">${item.visit_date}</span>
+          <span class="log-name">${item.visitor_name}</span>
+          <span class="log-target">${target}</span>
+          <span class="${kindClass}">${kindLabel}</span>
+        `;
+
+        const msg = document.createElement("div");
+        msg.className = "log-message";
+        msg.textContent = item.message || "（メモなし）";
+
+        const meta = document.createElement("div");
+        meta.className = "log-meta";
+        meta.textContent = `登録日時：${item.created_at}　ID：${item.id.substring(0, 8)}…`;
+
+        li.appendChild(header);
+        li.appendChild(msg);
+
+        if (item.photo_url) {
+          const photoDiv = document.createElement("div");
+          photoDiv.className = "log-photo";
+          const img = document.createElement("img");
+          img.src = API_BASE + item.photo_url;
+          img.alt = "お参り時の写真";
+          photoDiv.appendChild(img);
+          li.appendChild(photoDiv);
+        }
+
+        // 実際にお墓に行ったログにだけ寄付ブロックを出す
+        if (kind === "visit") {
+          const donateBlock = document.createElement("div");
+          donateBlock.className = "donation-block";
+
+          const list = donationsByVisit[item.id] || [];
+          const info = document.createElement("div");
+
+          if (!list.length) {
+            info.textContent = "このお参りへの寄付はまだ記録されていません。（ここはメモ用で、実際のお金のやりとりは別で行ってください）";
+          } else {
+            let total = 0;
+            list.forEach(d => {
+              total += Number(d.amount) || 0;
+            });
+
+            const summary = document.createElement("div");
+            summary.className = "donation-summary";
+            summary.textContent = `このお参りへの寄付 合計：${total.toLocaleString()} 円（${list.length} 件）`;
+            info.appendChild(summary);
+
+            list.forEach(d => {
+              const line = document.createElement("div");
+              line.className = "donation-line";
+              const amt = (Number(d.amount) || 0).toLocaleString();
+              const nm = d.donor_name || "匿名";
+              const msg = d.message ? ` ／ メッセージ：${d.message}` : "";
+              line.textContent = `・${nm}：${amt} 円${msg}`;
+              info.appendChild(line);
+            });
+          }
+
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.innerHTML = `寄付を記録する<span class="btn-sub">（メモ）</span>`;
+          btn.addEventListener("click", () => handleDonate(item));
+
+          donateBlock.appendChild(info);
+          const small = document.createElement("small");
+          small.textContent = "※ここに残すのは「寄付したつもり」のメモだけです。実際の送金は別の手段でお願いします。";
+          donateBlock.appendChild(small);
+          donateBlock.appendChild(btn);
+
+          li.appendChild(donateBlock);
+        }
+
+        li.appendChild(meta);
+        ul.appendChild(li);
+      });
+
+      container.innerHTML = "";
+      container.appendChild(ul);
+    }
+
+    // データを取得してグローバルに保持 → サマリ更新 → 一覧描画
+    async function loadLogs() {
+      const container = document.getElementById("logsContainer");
+      container.innerHTML = "<p class=\"empty\">読み込み中…</p>";
+
+      try {
+        const [resVisits, resDonations] = await Promise.all([
+          fetch(API_BASE + "/api/visits"),
+          fetch(API_BASE + "/api/donations"),
+        ]);
+
+        if (!resVisits.ok || !resDonations.ok) {
+          throw new Error("HTTP " + resVisits.status + " / " + resDonations.status);
+        }
+
+        gLogs = await resVisits.json();
+        gDonations = await resDonations.json();
+
+        updateSummary(gDonations);
+        updateVisitSummary(gLogs);
+        renderLogs();
+
+      } catch (e) {
+        console.error(e);
+        container.innerHTML = "<p class=\"empty\">読み込みに失敗しました。サーバーが起動しているか確認してください。</p>";
+      }
+    }
+
+    async function handleDonate(log) {
+      try {
+        const donor = window.prompt("寄付する方のお名前（ニックネームでも可）を入力してください：");
+        if (!donor) {
+          return;
+        }
+        const amountStr = window.prompt("寄付したい金額（円）を入力してください。※ここではメモだけで、実際の送金は別手段で行ってください：");
+        if (!amountStr) {
+          return;
+        }
+        const amount = parseInt(amountStr, 10);
+        if (!amount || amount <= 0) {
+          alert("金額が正しくありません。");
+          return;
+        }
+        const msg = window.prompt("ひとことメッセージがあれば入力してください。（空でもOK）") || "";
+
+        const fd = new FormData();
+        fd.append("visit_id", log.id);
+        fd.append("donor_name", donor);
+        fd.append("amount", String(amount));
+        fd.append("message", msg);
+
+        const res = await fetch(API_BASE + "/api/donations", {
+          method: "POST",
+          body: fd,
+        });
+
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status);
+        }
+
+        await loadLogs();
+        alert("寄付の記録を保存しました。（実際のお金のやりとりは別でお願いします）");
+
+      } catch (e) {
+        console.error(e);
+        alert("寄付の記録に失敗しました。サーバーが起動しているか確認してください。");
+      }
+    }
+
+    async function handleSubmit(e) {
+      e.preventDefault();
+      const btn = document.getElementById("submitBtn");
+      btn.disabled = true;
+
+      try {
+        const formEl = document.getElementById("visitForm");
+        const fd = new FormData(formEl);
+
+        const res = await fetch(API_BASE + "/api/visits", {
+          method: "POST",
+          body: fd
+        });
+
+        if (!res.ok) {
+          throw new Error("HTTP " + res.status);
+        }
+
+        document.getElementById("message").value = "";
+        document.getElementById("photo").value = "";
+        await loadLogs();
+
+        alert("記録しました。");
+
+      } catch (e2) {
+        console.error(e2);
+        alert("記録に失敗しました。サーバーが起動しているか確認してください。");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // 初期化
+    document.getElementById("visitForm").addEventListener("submit", handleSubmit);
+    const filterKindEl = document.getElementById("filterKind");
+    const filterTargetEl = document.getElementById("filterTarget");
+    filterKindEl.addEventListener("change", renderLogs);
+    filterTargetEl.addEventListener("input", renderLogs);
+
+    setToday();
+    loadLogs();
+
+    // ★ LINE から開かれた場合は LIFF を初期化（ローカル file:// のときは何もしない）
+    initLiffIfAvailable();
+  </script>
+</body>
+</html>
